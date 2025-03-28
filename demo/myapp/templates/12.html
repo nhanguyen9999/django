@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phân phối Mức Chi trả của Khách Hàng</title>
+    <script src="https://d3js.org/d3.v6.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+        svg {
+            width: 1000px;
+            height: 500px;
+        }
+        .bar:hover {
+            opacity: 0.7;
+        }
+        .title {
+            font-size: 18px;
+            font-weight: bold;
+            text-anchor: middle;
+        }
+        .tooltip {
+            position: absolute;
+            visibility: hidden;
+            background: white;
+            border: 1px solid black;
+            padding: 8px;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div id="chart"></div>
+    <script>
+        Promise.all([
+            fetch("/api/billlines/").then(res => res.json()),
+            fetch("/api/bills/").then(res => res.json())
+        ]).then(([billLines, bills]) => {
+            
+            const billMap = new Map(bills.map(b => [b.bill_code, b.customer__customer_code]));
+            
+            const customerSpending = new Map();
+            billLines.forEach(line => {
+                const customerCode = billMap.get(line.bill__bill_code);
+                if (customerCode) {
+                    customerSpending.set(customerCode, (customerSpending.get(customerCode) || 0) + parseFloat(line.total_price));
+                }
+            });
+            
+            const data = Array.from(customerSpending, ([Ma_KH, Total_Spent]) => ({ Ma_KH, Total_Spent }));
+            drawHistogram("#chart", data);
+        });
+        
+        function drawHistogram(container, data) {
+            const width = 1000, height = 500;
+            const margin = { top: 60, right: 50, bottom: 50, left: 100 };
+            
+            const binSize = 50000;
+            const minSpent = d3.min(data, d => d.Total_Spent);
+            const maxSpent = d3.max(data, d => d.Total_Spent);
+            let histogramData = [];
+            
+            for (let i = Math.floor(minSpent / binSize) * binSize; i <= maxSpent; i += binSize) {
+                histogramData.push({
+                    binStart: i,
+                    binEnd: i + binSize,
+                    quantity: data.filter(d => d.Total_Spent >= i && d.Total_Spent < i + binSize).length
+                });
+            }
+            
+            const x = d3.scaleLinear().domain([0, maxSpent]).range([margin.left, width - margin.right]);
+            const y = d3.scaleLinear().domain([0, d3.max(histogramData, d => d.quantity)]).nice().range([height - margin.bottom, margin.top]);
+            
+            const svg = d3.select(container).append("svg").attr("width", width).attr("height", height);
+            
+            const tooltip = d3.select(container).append("div").attr("class", "tooltip");
+            
+            svg.append("g").attr("transform", `translate(0,${height - margin.bottom})`).call(d3.axisBottom(x).ticks(10));
+            svg.append("g").attr("transform", `translate(${margin.left},0)`).call(d3.axisLeft(y));
+            
+            svg.selectAll("rect")
+                .data(histogramData)
+                .enter().append("rect")
+                .attr("x", d => x(d.binStart))
+                .attr("y", d => y(d.quantity))
+                .attr("width", d => Math.max(0, x(d.binEnd) - x(d.binStart) - 2))
+                .attr("height", d => height - margin.bottom - y(d.quantity))
+                .attr("fill", "#33CCCC")
+                .on("mouseover", (event, d) => {
+                    tooltip.style("visibility", "visible").html(`
+                        <strong>Mức chi trả:</strong> ${d3.format(",")(d.binStart)} - ${d3.format(",")(d.binEnd)}<br>
+                        <strong>Số lượng KH:</strong> ${d.quantity}
+                    `).style("left", (event.pageX + 10) + "px").style("top", (event.pageY - 10) + "px");
+                    d3.select(event.currentTarget).attr("fill", "#FFFF66");
+                })
+                .on("mousemove", event => {
+                    tooltip.style("left", (event.pageX + 10) + "px").style("top", (event.pageY - 10) + "px");
+                })
+                .on("mouseout", event => {
+                    tooltip.style("visibility", "hidden");
+                    d3.select(event.currentTarget).attr("fill", "#33CCCC");
+                });
+            
+            svg.append("text").attr("class", "title").attr("x", width / 2).attr("y", margin.top / 2)
+                .style("text-anchor", "middle").style("fill", "#33CCCC")
+                .text("Phân phối Mức Chi trả của Khách Hàng");
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Q7</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        svg { width: 1200px; height: 600px; }
+        .bar:hover { opacity: 0.7; }
+        .label { fill: white; font-size: 12px; text-anchor: end; }
+        .title { font-size: 18px; font-weight: bold; text-anchor: middle; }
+    </style>
+</head>
+<body>
+    <svg></svg>
+    <script>
+        Promise.all([
+            fetch('/api/billlines/').then(res => res.json()),
+            fetch('/api/products/').then(res => res.json()),
+            fetch('/api/category/').then(res => res.json())
+        ]).then(([billlines, products, categories]) => {
+            
+            const productMap = new Map(products.map(p => [p.product_code, p]));
+            const categoryMap = new Map(categories.map(c => [c.category_id, c]));
+            
+            const data = billlines.map(b => {
+                const product = productMap.get(b.product__product_code);
+                const category = categoryMap.get(product?.category_id);
+                return {
+                    Ma_don_hang: b.bill__bill_code,
+                    Nhom_hang: category ? `[${category.category_code}] ${category.category_name}` : 'Không xác định'
+                };
+            });
+            
+            const totalOrders = new Set(data.map(d => d.Ma_don_hang)).size;
+            
+            const groupedData = d3.rollups(
+                data,
+                v => new Set(v.map(d => d.Ma_don_hang)).size,
+                d => d.Nhom_hang
+            ).map(([Nhom_hang, So_don_hang]) => ({
+                Nhom_hang,
+                Xac_suat: So_don_hang / totalOrders
+            }));
+            
+            groupedData.sort((a, b) => b.Xac_suat - a.Xac_suat);
+            
+            const uniqueGroups = groupedData.map(d => d.Nhom_hang);
+            const colorScale = d3.scaleOrdinal()
+                .domain(uniqueGroups)
+                .range(d3.schemeTableau10);
+            
+            drawChart(groupedData, colorScale);
+        });
+        
+        function drawChart(data, colorScale) {
+            const width = 1200, height = 600;
+            const margin = { top: 60, right: 250, bottom: 50, left: 250 };
+            d3.select("svg").selectAll("*").remove();
+            
+            const svg = d3.select("svg")
+                          .attr("width", width)
+                          .attr("height", height);
+            
+            const x = d3.scaleLinear()
+                        .domain([0, d3.max(data, d => d.Xac_suat)])
+                        .nice()
+                        .range([margin.left, width - margin.right - 100]);
+            
+            const y = d3.scaleBand()
+                        .domain(data.map(d => d.Nhom_hang))
+                        .range([margin.top, height - margin.bottom])
+                        .padding(0.3);
+            
+            svg.append("g")
+                .attr("transform", `translate(${margin.left},0)`)
+                .call(d3.axisLeft(y).tickSize(0).tickPadding(10));
+            
+            svg.append("g")
+                .attr("transform", `translate(0,${height - margin.bottom})`)
+                .call(d3.axisBottom(x)
+                    .ticks(6)
+                    .tickFormat(d => (d * 100).toFixed(0) + "%"));
+            
+            svg.selectAll(".bar")
+                .data(data)
+                .enter()
+                .append("rect")
+                .attr("class", "bar")
+                .attr("x", margin.left)
+                .attr("y", d => y(d.Nhom_hang))
+                .attr("width", d => x(d.Xac_suat) - margin.left)
+                .attr("height", y.bandwidth())
+                .attr("fill", d => colorScale(d.Nhom_hang));
+            
+            svg.selectAll(".label")
+               .data(data)
+               .enter()
+               .append("text")
+               .attr("class", "label")
+               .attr("x", d => x(d.Xac_suat) - 5)
+               .attr("y", d => y(d.Nhom_hang) + y.bandwidth() / 2)
+               .attr("dy", "0.35em")
+               .style("text-anchor", "end")
+               .text(d => (d.Xac_suat * 100).toFixed(1) + "%");
+            
+            svg.append("text")
+               .attr("class", "title")
+               .attr("x", width / 2)
+               .attr("y", 30)
+               .style("fill", "#33CCCC")
+               .style("text-anchor", "middle")
+               .text("Xác suất bán hàng theo Nhóm hàng");
+            
+            drawLegend(svg, colorScale, data.map(d => d.Nhom_hang), width - 180, margin.top);
+        }
+        
+        function drawLegend(svg, colorScale, uniqueGroups, legendX, legendY) {
+            const legendSpacing = 25;
+            const legend = svg.append("g")
+                .attr("class", "legend")
+                .attr("transform", `translate(${legendX}, ${legendY})`);
+        }
+    </script>
+</body>
+</html>
