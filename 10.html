@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Q10</title>
+    <script src="https://d3js.org/d3.v6.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 20px;
+        }
+        h2 {
+            color: #333;
+        }
+        #charts {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(2, auto);
+            gap: 20px;
+            justify-items: center;
+        }
+        .chart-container {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 2px 2px 10px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            max-width: 450px;
+        }
+    </style>
+</head>
+<body>
+    <h2>Xác suất bán hàng của Mặt hàng theo Nhóm hàng theo từng Tháng</h2>
+    <div id="charts"></div>
+    <script>
+        async function fetchData() {
+            const [billLines, products, categories] = await Promise.all([
+                fetch('/api/billlines/').then(res => res.json()),
+                fetch('/api/products/').then(res => res.json()),
+                fetch('/api/category/').then(res => res.json())
+            ]);
+
+            let productMap = new Map(products.map(p => [p.product_code, p]));
+            let categoryMap = new Map(categories.map(c => [c.category_id, c]));
+
+            let data = billLines.map(d => {
+                let product = productMap.get(d.product__product_code) || {};
+                let category = categoryMap.get(product.category_id) || {};
+                let date = new Date(d.bill__time_created);
+                return {
+                    "Tháng": "T" + (date.getUTCMonth() + 1).toString().padStart(2, '0'),
+                    "Nhóm hàng": `[${category.category_code}] ${category.category_name}`,
+                    "Mặt hàng": `[${product.product_code}] ${product.product_name}`,
+                    "Mã đơn hàng": d.bill__bill_code
+                };
+            });
+
+            processData(data);
+        }
+
+        function processData(data) {
+            const dataByGroup = d3.group(data, d => d["Nhóm hàng"]);
+            const nhomHangList = Array.from(dataByGroup.keys()).slice(0, 6); // Lấy 6 nhóm hàng đầu tiên
+            const mainContainer = d3.select("#charts");
+            
+            nhomHangList.forEach(nhom => {
+                const filteredData = dataByGroup.get(nhom);
+                const totalOrdersByMonth = new Map(d3.rollup(filteredData, v => new Set(v.map(d => d["Mã đơn hàng"])).size, d => d["Tháng"]));
+                const countByItemMonth = Array.from(
+                    d3.rollup(filteredData, v => new Set(v.map(d => d["Mã đơn hàng"])).size, d => d["Tháng"], d => d["Mặt hàng"]),
+                    ([month, items]) => Array.from(items, ([item, count]) => ({ month, item, count }))
+                ).flat();
+                
+                const probabilities = countByItemMonth.map(d => {
+                    const total = totalOrdersByMonth.get(d.month) || 0;
+                    return { month: d.month, item: d.item, count: d.count, probability: total > 0 ? d.count / total : 0 };
+                });
+                
+                const topItems = [...new Set(probabilities.map(d => d.item))]
+                    .map(item => {
+                        const itemData = probabilities.filter(d => d.item === item);
+                        const avgProb = d3.mean(itemData, d => d.probability);
+                        return { item, avgProb };
+                    })
+                    .sort((a, b) => b.avgProb - a.avgProb)
+                    .slice(0, 5)
+                    .map(d => d.item);
+                
+                const filteredProbabilities = probabilities.filter(d => topItems.includes(d.item));
+                const container = mainContainer.append("div").attr("class", "chart-container");
+                drawLineChart(container, filteredProbabilities, nhom);
+            });
+        }
+
+        function drawLineChart(container, data, title) {
+            const width = 450, height = 250;
+            const margin = { top: 30, right: 20, bottom: 20, left: 50 };
+            const chartWidth = width - margin.left - margin.right;
+            const chartHeight = height - margin.top - margin.bottom;
+            
+            const svg = container.append("svg").attr("width", width).attr("height", height);
+            const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+            
+            const months = [...new Set(data.map(d => d.month))].sort();
+            const items = [...new Set(data.map(d => d.item))];
+            
+            const x = d3.scalePoint().domain(months).range([0, chartWidth]).padding(0.5);
+            const y = d3.scaleLinear().domain([0, d3.max(data, d => d.probability) * 1.1]).nice().range([chartHeight, 0]);
+            const color = d3.scaleOrdinal(d3.schemeCategory10).domain(items);
+            
+            g.append("g").attr("transform", `translate(0,${chartHeight})`).call(d3.axisBottom(x));
+            g.append("g").call(d3.axisLeft(y).ticks(5).tickFormat(d => `${(d * 100).toFixed(0)}%`));
+            
+            const line = d3.line()
+                .x(d => x(d.month))
+                .y(d => y(d.probability))
+                .curve(d3.curveLinear);
+            
+            items.forEach(item => {
+                const itemData = data.filter(d => d.item === item);
+                
+                g.append("path")
+                    .datum(itemData)
+                    .attr("fill", "none")
+                    .attr("stroke", color(item))
+                    .attr("stroke-width", 2)
+                    .attr("d", line);
+                
+                g.selectAll(".dot")
+                    .data(itemData)
+                    .enter()
+                    .append("circle")
+                    .attr("cx", d => x(d.month))
+                    .attr("cy", d => y(d.probability))
+                    .attr("r", 4)
+                    .attr("fill", color(item));
+            });
+            
+            svg.append("text")
+                .attr("x", width / 2)
+                .attr("y", margin.top / 2)
+                .attr("text-anchor", "middle")
+                .style("font-size", "14px")
+                .style("font-weight", "bold")
+                .text(title);
+        }
+        
+        fetchData();
+    </script>
+</body>
+</html>
